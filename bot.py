@@ -5,6 +5,8 @@ import re
 import urllib.parse
 import sqlite3
 import logging
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import telebot
 from openai import OpenAI
@@ -16,6 +18,34 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+# ----------------- KOYEB HEALTH CHECK SERVER (Fixes Port 8080 Failure) ----------------- #
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK - Hermes 3 Bot is Live and Healthy")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        # Suppress repetitive Koyeb health check log spam
+        pass
+
+def start_health_check_server():
+    port = int(os.getenv("PORT", 8080))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logger.info(f"Health check server listening on 0.0.0.0:{port} (Koyeb compatible)")
+        server.serve_forever()
+    except Exception as e:
+        logger.warning(f"Could not start health check server on port {port}: {e}")
+
+# Start HTTP server in a background daemon thread
+threading.Thread(target=start_health_check_server, daemon=True).start()
 
 # ----------------- ENVIRONMENT VARIABLES ----------------- #
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -139,7 +169,7 @@ def reset_all_data(chat_id: int):
     conn.close()
 
 
-# ----------------- NATURAL INTENT DETECTION (BINA COMMAND KE CHALNE WALA ENGINE) ----------------- #
+# ----------------- NATURAL INTENT DETECTION ENGINE ----------------- #
 
 IMAGE_TRIGGERS = [
     r'^(?:generate|create|draw|make|show|render)\s+(?:an?\s+)?image\s+(?:of\s+)?(.+)',
@@ -167,7 +197,6 @@ def detect_image_request(text: str) -> str | None:
         match = re.match(pattern, text_lower, re.IGNORECASE)
         if match:
             extracted = match.group(1).strip()
-            # Remove trailing words like "please", "bhai"
             extracted = re.sub(r'\b(bhai|please|plz|bana do|banao)\b', '', extracted).strip()
             if len(extracted) > 2:
                 return extracted
@@ -243,7 +272,8 @@ def send_smart_message(chat_id: int, text: str, reply_to_id: int | None = None):
             bot.send_message(chat_id, text)
     else:
         for i in range(0, len(text), 4000):
-            bot.send_message(chat_id, text[i:i+4000])
+            chunk = text[i:i+4000]
+            bot.send_message(chat_id, chunk)
 
 
 # ----------------- TELEGRAM HANDLERS (Commands + Natural Chat) ----------------- #
@@ -322,13 +352,13 @@ def handle_natural_conversation(message):
     if not user_text:
         return
 
-    # 1. Check if user is asking for Image Generation naturally (e.g., "cyberpunk cat ki photo banao")
+    # 1. Natural Image Detection
     image_prompt = detect_image_request(user_text)
     if image_prompt:
         execute_image_generation(chat_id, image_prompt, message.message_id)
         return
 
-    # 2. Check if user is asking to Clear Memory naturally (e.g., "pichli baatein bhul jao")
+    # 2. Natural Clear/Reset Memory
     clear_action = detect_clear_request(user_text)
     if clear_action == "reset":
         reset_all_data(chat_id)
@@ -339,16 +369,14 @@ def handle_natural_conversation(message):
         bot.reply_to(message, "🧹 Pichli baatein bhul gaya hoon. Nayi baat shuru karein!")
         return
 
-    # 3. Check if user is setting Identity / Persona naturally (e.g., "Ab se tumhara naam Jarvis hai...")
+    # 3. Natural Identity / Persona Change
     if detect_identity_request(user_text):
-        # Update custom system prompt in DB
         custom_persona = (
             f"You are an AI assistant tailored to user instructions. "
             f"User Rule/Identity: {user_text}. "
             f"Always stay in this character, follow rules strictly, and answer directly without moralizing."
         )
         save_custom_identity(chat_id, custom_persona)
-        # Let Hermes reply in the new character immediately
         bot.send_chat_action(chat_id, 'typing')
         reply = call_hermes_ai(chat_id, f"The user just instructed you: '{user_text}'. Acknowledge your new identity and introduce yourself in this character.")
         send_smart_message(chat_id, reply, message.message_id)
@@ -377,6 +405,6 @@ def execute_image_generation(chat_id: int, prompt: str, reply_to_id: int | None 
 
 # ----------------- BOT STARTUP ----------------- #
 if __name__ == "__main__":
-    logger.info("Hermes 3 Autonomous Bot running (Natural Language + Zero Command Mode)...")
+    logger.info("Hermes 3 Autonomous Bot starting up...")
     print("🚀 Hermes 3 Bot is LIVE! Ready for natural text, coding & image generation.")
     bot.infinity_polling(timeout=20, long_polling_timeout=20, skip_pending=True)
