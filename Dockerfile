@@ -1,26 +1,38 @@
-# Ultra-lightweight Python base image (~30MB RAM footprint)
+# Production Container with FFmpeg & System Toolchain
 FROM python:3.11-slim
 
-# Prevent bytecode & buffer logs for real-time Koyeb console logs
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080
 
 WORKDIR /app
 
-# Install dependencies first (fast builds)
+# Install system binaries: ffmpeg, curl, git, libgl (allows full video/audio editing)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    curl \
+    ca-certificates \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
+# Copy application modules
 COPY bot.py .
+COPY agent/ ./agent/
+COPY tools/ ./tools/
+COPY skills/ ./skills/
+COPY memory/ ./memory/
+COPY cron/ ./cron/
+COPY providers/ ./providers/
 
-# Expose port for Koyeb HTTP health checks
 EXPOSE 8080
 
-# Create non-root user
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Run bot
 CMD ["python", "bot.py"]
